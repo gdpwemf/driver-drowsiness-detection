@@ -1,12 +1,11 @@
 import {
     FaceLandmarker,
     FilesetResolver
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304";
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.0/+esm";
 
 
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
-
 const ctx = canvas.getContext("2d");
 
 const statusText = document.getElementById("status");
@@ -15,31 +14,22 @@ const startButton = document.getElementById("startButton");
 
 
 const IMG_SIZE = 64;
-
 const CNN_OPEN_THRESHOLD = 0.55;
 const EAR_CLOSED_THRESHOLD = 0.18;
-
 const SLEEP_SECONDS = 2.0;
-
 const SMOOTH_FRAMES = 5;
 
 
 const LEFT_EYE = [
-    33,
-    133,
-    159,
-    145,
-    158,
-    153
+    33, 133,
+    159, 145,
+    158, 153
 ];
 
 const RIGHT_EYE = [
-    362,
-    263,
-    386,
-    374,
-    385,
-    380
+    362, 263,
+    386, 374,
+    385, 380
 ];
 
 
@@ -47,63 +37,74 @@ let eyeModel = null;
 let faceLandmarker = null;
 
 let closedStart = null;
-
 let leftHistory = [];
 let rightHistory = [];
 
 let running = false;
+let modelsReady = false;
+
+
+function setStatus(text, color = "white") {
+    statusText.innerText = text;
+    statusText.style.color = color;
+}
 
 
 async function loadModels() {
+    setStatus("LOADING MODEL...", "yellow");
+    infoText.innerText = "";
 
-    statusText.innerText = "LOADING MODEL...";
+    try {
+        await tf.ready();
 
-    eyeModel = await tf.loadLayersModel(
-        "./model/model.json"
-    );
+        eyeModel = await tf.loadLayersModel(
+            "./model/model.json"
+        );
 
+        const vision = await FilesetResolver.forVisionTasks(
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.0/wasm"
+        );
 
-    const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm"
-    );
+        faceLandmarker = await FaceLandmarker.createFromOptions(
+            vision,
+            {
+                baseOptions: {
+                    modelAssetPath: "./face_landmarker.task"
+                },
 
+                runningMode: "VIDEO",
+                numFaces: 1,
 
-    faceLandmarker = await FaceLandmarker.createFromOptions(
-        vision,
-        {
-            baseOptions: {
-                modelAssetPath:
-                    "./face_landmarker.task",
+                minFaceDetectionConfidence: 0.5,
+                minFacePresenceConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            }
+        );
 
-                delegate: "GPU"
-            },
+        modelsReady = true;
 
-            runningMode: "VIDEO",
+        setStatus("READY", "lime");
+        infoText.innerText = "Model loaded successfully.";
 
-            numFaces: 1,
+    } catch (error) {
+        console.error("MODEL ERROR:", error);
 
-            minFaceDetectionConfidence: 0.5,
-            minFacePresenceConfidence: 0.5,
-            minTrackingConfidence: 0.5
-        }
-    );
+        setStatus("MODEL ERROR", "red");
 
+        infoText.innerText =
+            `${error.name || "Error"}: ${error.message}`;
 
-    statusText.innerText = "READY";
+        throw error;
+    }
 }
 
 
 function distance(p1, p2) {
-
-    const dx =
-        p1.x - p2.x;
-
-    const dy =
-        p1.y - p2.y;
+    const dx = p1.x - p2.x;
+    const dy = p1.y - p2.y;
 
     return Math.sqrt(
-        dx * dx +
-        dy * dy
+        dx * dx + dy * dy
     );
 }
 
@@ -112,55 +113,34 @@ function calculateEAR(
     landmarks,
     indices
 ) {
+    const p1 = landmarks[indices[0]];
+    const p2 = landmarks[indices[1]];
+    const p3 = landmarks[indices[2]];
+    const p4 = landmarks[indices[3]];
+    const p5 = landmarks[indices[4]];
+    const p6 = landmarks[indices[5]];
 
-    const p1 =
-        landmarks[indices[0]];
+    const horizontal = distance(
+        p1,
+        p2
+    );
 
-    const p2 =
-        landmarks[indices[1]];
+    const vertical1 = distance(
+        p3,
+        p4
+    );
 
-    const p3 =
-        landmarks[indices[2]];
-
-    const p4 =
-        landmarks[indices[3]];
-
-    const p5 =
-        landmarks[indices[4]];
-
-    const p6 =
-        landmarks[indices[5]];
-
-
-    const horizontal =
-        distance(
-            p1,
-            p2
-        );
-
-
-    const vertical1 =
-        distance(
-            p3,
-            p4
-        );
-
-
-    const vertical2 =
-        distance(
-            p5,
-            p6
-        );
-
+    const vertical2 = distance(
+        p5,
+        p6
+    );
 
     if (horizontal === 0) {
         return 0;
     }
 
-
     return (
-        vertical1 +
-        vertical2
+        vertical1 + vertical2
     ) / (
         2 * horizontal
     );
@@ -173,85 +153,54 @@ function getEyeBox(
     width,
     height
 ) {
+    const points = indices.map(
+        index => ({
+            x: landmarks[index].x * width,
+            y: landmarks[index].y * height
+        })
+    );
 
-    const points =
-        indices.map(
-            index => ({
-                x:
-                    landmarks[index].x
-                    * width,
+    const xs = points.map(p => p.x);
+    const ys = points.map(p => p.y);
 
-                y:
-                    landmarks[index].y
-                    * height
-            })
-        );
+    let x1 = Math.min(...xs);
+    let x2 = Math.max(...xs);
 
+    let y1 = Math.min(...ys);
+    let y2 = Math.max(...ys);
 
-    const xs =
-        points.map(p => p.x);
+    const eyeWidth = Math.max(
+        x2 - x1,
+        10
+    );
 
-    const ys =
-        points.map(p => p.y);
+    const eyeHeight = Math.max(
+        y2 - y1,
+        10
+    );
 
+    const marginX = eyeWidth * 0.35;
+    const marginY = eyeHeight * 1.2;
 
-    let x1 =
-        Math.min(...xs);
+    x1 = Math.max(
+        0,
+        Math.floor(x1 - marginX)
+    );
 
-    let x2 =
-        Math.max(...xs);
+    y1 = Math.max(
+        0,
+        Math.floor(y1 - marginY)
+    );
 
-    let y1 =
-        Math.min(...ys);
+    x2 = Math.min(
+        width,
+        Math.ceil(x2 + marginX)
+    );
 
-    let y2 =
-        Math.max(...ys);
-
-
-    const eyeWidth =
-        Math.max(
-            x2 - x1,
-            10
-        );
-
-    const eyeHeight =
-        Math.max(
-            y2 - y1,
-            10
-        );
-
-
-    const marginX =
-        eyeWidth * 0.35;
-
-    const marginY =
-        eyeHeight * 1.2;
-
-
-    x1 =
-        Math.max(
-            0,
-            x1 - marginX
-        );
-
-    x2 =
-        Math.min(
-            width,
-            x2 + marginX
-        );
-
-    y1 =
-        Math.max(
-            0,
-            y1 - marginY
-        );
-
-    y2 =
-        Math.min(
-            height,
-            y2 + marginY
-        );
-
+    y2 = Math.min(
+        height,
+        Math.ceil(y2 + marginY)
+    );
 
     return {
         x1,
@@ -263,70 +212,68 @@ function getEyeBox(
 
 
 function predictEye(box) {
+    const x1 = Math.max(
+        0,
+        Math.floor(box.x1)
+    );
+
+    const y1 = Math.max(
+        0,
+        Math.floor(box.y1)
+    );
+
+    const x2 = Math.min(
+        video.videoWidth,
+        Math.ceil(box.x2)
+    );
+
+    const y2 = Math.min(
+        video.videoHeight,
+        Math.ceil(box.y2)
+    );
+
+    const cropWidth = x2 - x1;
+    const cropHeight = y2 - y1;
+
+    if (
+        cropWidth <= 1 ||
+        cropHeight <= 1
+    ) {
+        return 1.0;
+    }
 
     return tf.tidy(() => {
+        const frameTensor =
+            tf.browser.fromPixels(video);
 
-        const width =
-            Math.max(
-                1,
-                Math.round(
-                    box.x2 -
-                    box.x1
-                )
-            );
-
-
-        const height =
-            Math.max(
-                1,
-                Math.round(
-                    box.y2 -
-                    box.y1
-                )
-            );
-
-
-        let image =
-            tf.browser.fromPixels(
-                video
-            );
-
-
-        image =
-            tf.slice(
-                image,
+        const eyeTensor =
+            frameTensor.slice(
                 [
-                    Math.round(box.y1),
-                    Math.round(box.x1),
+                    y1,
+                    x1,
                     0
                 ],
                 [
-                    height,
-                    width,
+                    cropHeight,
+                    cropWidth,
                     3
                 ]
             );
 
-
-        image =
+        const resized =
             tf.image.resizeBilinear(
-                image,
+                eyeTensor,
                 [
                     IMG_SIZE,
                     IMG_SIZE
                 ]
             );
 
-
-        image =
-            image.expandDims(0);
-
+        const batch =
+            resized.expandDims(0);
 
         const prediction =
-            eyeModel.predict(
-                image
-            );
-
+            eyeModel.predict(batch);
 
         return prediction.dataSync()[0];
     });
@@ -337,39 +284,31 @@ function combineResult(
     openScore,
     ear
 ) {
-
     const cnnState =
         openScore >= CNN_OPEN_THRESHOLD
             ? "OPEN"
             : "CLOSED";
 
-
     const closedConfidence =
         1 - openScore;
-
 
     if (ear < 0.15) {
         return "CLOSED";
     }
 
-
     if (
-        cnnState === "CLOSED"
-        &&
+        cnnState === "CLOSED" &&
         ear < EAR_CLOSED_THRESHOLD
     ) {
         return "CLOSED";
     }
 
-
     if (
-        cnnState === "CLOSED"
-        &&
+        cnnState === "CLOSED" &&
         closedConfidence >= 0.85
     ) {
         return "CLOSED";
     }
-
 
     return "OPEN";
 }
@@ -379,30 +318,24 @@ function smoothState(
     history,
     state
 ) {
-
     history.push(state);
 
-
     if (
-        history.length
-        >
+        history.length >
         SMOOTH_FRAMES
     ) {
         history.shift();
     }
 
-
     const closedCount =
         history.filter(
-            x => x === "CLOSED"
+            value =>
+                value === "CLOSED"
         ).length;
 
-
     const ratio =
-        closedCount
-        /
+        closedCount /
         history.length;
-
 
     return ratio >= 0.6
         ? "CLOSED"
@@ -415,19 +348,13 @@ function drawEye(
     state,
     ear
 ) {
-
     const color =
         state === "OPEN"
             ? "#00ff00"
             : "#ff0000";
 
-
-    ctx.strokeStyle =
-        color;
-
-    ctx.lineWidth =
-        3;
-
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
 
     ctx.strokeRect(
         box.x1,
@@ -436,13 +363,8 @@ function drawEye(
         box.y2 - box.y1
     );
 
-
-    ctx.fillStyle =
-        color;
-
-    ctx.font =
-        "18px Arial";
-
+    ctx.fillStyle = color;
+    ctx.font = "18px Arial";
 
     ctx.fillText(
         `${state} EAR:${ear.toFixed(2)}`,
@@ -455,250 +377,201 @@ function drawEye(
 }
 
 
-async function processFrame() {
-
+function processFrame() {
     if (!running) {
         return;
     }
 
+    try {
+        if (
+            video.readyState < 2 ||
+            !faceLandmarker ||
+            !eyeModel
+        ) {
+            requestAnimationFrame(
+                processFrame
+            );
 
-    if (
-        video.readyState
-        <
-        2
-    ) {
+            return;
+        }
 
-        requestAnimationFrame(
-            processFrame
+        canvas.width =
+            video.videoWidth;
+
+        canvas.height =
+            video.videoHeight;
+
+        ctx.clearRect(
+            0,
+            0,
+            canvas.width,
+            canvas.height
         );
 
-        return;
-    }
-
-
-    canvas.width =
-        video.videoWidth;
-
-    canvas.height =
-        video.videoHeight;
-
-
-    ctx.clearRect(
-        0,
-        0,
-        canvas.width,
-        canvas.height
-    );
-
-
-    const now =
-        performance.now();
-
-
-    const result =
-        faceLandmarker.detectForVideo(
-            video,
-            now
-        );
-
-
-    if (
-        result.faceLandmarks
-        &&
-        result.faceLandmarks.length > 0
-    ) {
-
-        const landmarks =
-            result.faceLandmarks[0];
-
-
-        const leftEAR =
-            calculateEAR(
-                landmarks,
-                LEFT_EYE
+        const result =
+            faceLandmarker.detectForVideo(
+                video,
+                performance.now()
             );
 
+        if (
+            result.faceLandmarks &&
+            result.faceLandmarks.length > 0
+        ) {
+            const landmarks =
+                result.faceLandmarks[0];
 
-        const rightEAR =
-            calculateEAR(
-                landmarks,
-                RIGHT_EYE
-            );
+            const leftEAR =
+                calculateEAR(
+                    landmarks,
+                    LEFT_EYE
+                );
 
+            const rightEAR =
+                calculateEAR(
+                    landmarks,
+                    RIGHT_EYE
+                );
 
-        const leftBox =
-            getEyeBox(
-                landmarks,
-                LEFT_EYE,
-                canvas.width,
-                canvas.height
-            );
+            const leftBox =
+                getEyeBox(
+                    landmarks,
+                    LEFT_EYE,
+                    canvas.width,
+                    canvas.height
+                );
 
+            const rightBox =
+                getEyeBox(
+                    landmarks,
+                    RIGHT_EYE,
+                    canvas.width,
+                    canvas.height
+                );
 
-        const rightBox =
-            getEyeBox(
-                landmarks,
-                RIGHT_EYE,
-                canvas.width,
-                canvas.height
-            );
+            const leftScore =
+                predictEye(
+                    leftBox
+                );
 
+            const rightScore =
+                predictEye(
+                    rightBox
+                );
 
-        const leftScore =
-            predictEye(
-                leftBox
-            );
+            const leftState =
+                combineResult(
+                    leftScore,
+                    leftEAR
+                );
 
+            const rightState =
+                combineResult(
+                    rightScore,
+                    rightEAR
+                );
 
-        const rightScore =
-            predictEye(
-                rightBox
-            );
+            const leftFinal =
+                smoothState(
+                    leftHistory,
+                    leftState
+                );
 
+            const rightFinal =
+                smoothState(
+                    rightHistory,
+                    rightState
+                );
 
-        const leftState =
-            combineResult(
-                leftScore,
+            drawEye(
+                leftBox,
+                leftFinal,
                 leftEAR
             );
 
-
-        const rightState =
-            combineResult(
-                rightScore,
+            drawEye(
+                rightBox,
+                rightFinal,
                 rightEAR
             );
 
+            const bothClosed =
+                leftFinal === "CLOSED" &&
+                rightFinal === "CLOSED";
 
-        const leftFinal =
-            smoothState(
-                leftHistory,
-                leftState
-            );
+            if (bothClosed) {
+                if (closedStart === null) {
+                    closedStart =
+                        performance.now();
+                }
 
+                const elapsed =
+                    (
+                        performance.now() -
+                        closedStart
+                    ) / 1000;
 
-        const rightFinal =
-            smoothState(
-                rightHistory,
-                rightState
-            );
+                if (
+                    elapsed >=
+                    SLEEP_SECONDS
+                ) {
+                    setStatus(
+                        "SLEEPING",
+                        "red"
+                    );
+                } else {
+                    setStatus(
+                        "EYES CLOSED",
+                        "orange"
+                    );
+                }
 
-
-        drawEye(
-            leftBox,
-            leftFinal,
-            leftEAR
-        );
-
-
-        drawEye(
-            rightBox,
-            rightFinal,
-            rightEAR
-        );
-
-
-        const bothClosed =
-            leftFinal === "CLOSED"
-            &&
-            rightFinal === "CLOSED";
-
-
-        if (bothClosed) {
-
-            if (
-                closedStart === null
-            ) {
-
-                closedStart =
-                    performance.now();
-            }
-
-
-            const elapsed =
-                (
-                    performance.now()
-                    -
-                    closedStart
-                )
-                /
-                1000;
-
-
-            if (
-                elapsed
-                >=
-                SLEEP_SECONDS
-            ) {
-
-                statusText.innerText =
-                    "SLEEPING";
-
-                statusText.style.color =
-                    "red";
+                infoText.innerText =
+                    `Closed: ${elapsed.toFixed(1)} sec`;
 
             } else {
+                closedStart = null;
 
-                statusText.innerText =
-                    "EYES CLOSED";
+                setStatus(
+                    "AWAKE",
+                    "lime"
+                );
 
-                statusText.style.color =
-                    "orange";
+                infoText.innerText =
+                    `L EAR ${leftEAR.toFixed(3)} | R EAR ${rightEAR.toFixed(3)}`;
             }
 
-
-            infoText.innerText =
-                `Closed: ${elapsed.toFixed(1)} sec`;
-
         } else {
+            closedStart = null;
+            leftHistory = [];
+            rightHistory = [];
 
-            closedStart =
-                null;
+            setStatus(
+                "FACE NOT DETECTED",
+                "white"
+            );
 
-            statusText.innerText =
-                "AWAKE";
-
-            statusText.style.color =
-                "lime";
-
-            infoText.innerText =
-                "";
+            infoText.innerText = "";
         }
 
-
-        ctx.fillStyle =
-            "white";
-
-        ctx.font =
-            "18px Arial";
-
-
-        ctx.fillText(
-            `L EAR: ${leftEAR.toFixed(3)}   R EAR: ${rightEAR.toFixed(3)}`,
-            20,
-            canvas.height - 20
+    } catch (error) {
+        console.error(
+            "PROCESSING ERROR:",
+            error
         );
 
+        running = false;
 
-    } else {
-
-        closedStart =
-            null;
-
-        leftHistory = [];
-        rightHistory = [];
-
-
-        statusText.innerText =
-            "FACE NOT DETECTED";
-
-        statusText.style.color =
-            "white";
+        setStatus(
+            "PROCESSING ERROR",
+            "red"
+        );
 
         infoText.innerText =
-            "";
-    }
+            `${error.name || "Error"}: ${error.message}`;
 
+        return;
+    }
 
     requestAnimationFrame(
         processFrame
@@ -707,77 +580,54 @@ async function processFrame() {
 
 
 async function startCamera() {
+    if (!modelsReady) {
+        setStatus(
+            "MODEL NOT READY",
+            "orange"
+        );
+
+        return;
+    }
 
     try {
-
-        if (!eyeModel || !faceLandmarker) {
-
-            statusText.innerText =
-                "LOADING...";
-
-            await loadModels();
-        }
-
-
         const stream =
             await navigator.mediaDevices.getUserMedia(
                 {
-                    video: {
-                        facingMode:
-                            "user",
-
-                        width: {
-                            ideal: 1280
-                        },
-
-                        height: {
-                            ideal: 720
-                        }
-                    },
-
+                    video: true,
                     audio: false
                 }
             );
 
-
         video.srcObject =
             stream;
 
-
         await video.play();
 
-
-        running =
-            true;
-
+        running = true;
 
         startButton.style.display =
             "none";
 
-
-        statusText.innerText =
-            "AWAKE";
-
-        statusText.style.color =
-            "lime";
-
+        setStatus(
+            "AWAKE",
+            "lime"
+        );
 
         processFrame();
 
-
     } catch (error) {
-
         console.error(
+            "CAMERA ERROR:",
             error
         );
 
-
-        statusText.innerText =
-            "CAMERA ERROR";
-
+        setStatus(
+            "CAMERA ERROR",
+            "red"
+        );
 
         infoText.innerText =
-            error.message;
+            `${error.name || "Error"}: ${error.message}`;
     }
 }
 
@@ -788,17 +638,4 @@ startButton.addEventListener(
 );
 
 
-loadModels().catch(
-    error => {
-
-        console.error(
-            error
-        );
-
-        statusText.innerText =
-            "MODEL LOAD ERROR";
-
-        infoText.innerText =
-            error.message;
-    }
-);
+loadModels();
