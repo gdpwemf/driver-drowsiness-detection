@@ -1,7 +1,7 @@
 import {
     FaceLandmarker,
     FilesetResolver
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.0/+esm";
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304";
 
 
 const video = document.getElementById("video");
@@ -12,6 +12,8 @@ const statusText = document.getElementById("status");
 const infoText = document.getElementById("info");
 const startButton = document.getElementById("startButton");
 
+
+const BASE_PATH = "/driver-drowsiness-detection";
 
 const IMG_SIZE = 64;
 const CNN_OPEN_THRESHOLD = 0.55;
@@ -51,25 +53,26 @@ function setStatus(text, color = "white") {
 
 
 async function loadModels() {
-    setStatus("LOADING MODEL...", "yellow");
-    infoText.innerText = "";
-
     try {
+        setStatus("LOADING MODEL...", "yellow");
+        infoText.innerText = "";
+
         await tf.ready();
 
         eyeModel = await tf.loadLayersModel(
-            "./model/model.json"
+            `${BASE_PATH}/model/model.json`
         );
 
         const vision = await FilesetResolver.forVisionTasks(
-            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.0/wasm"
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm"
         );
 
         faceLandmarker = await FaceLandmarker.createFromOptions(
             vision,
             {
                 baseOptions: {
-                    modelAssetPath: "./face_landmarker.task"
+                    modelAssetPath:
+                        `${BASE_PATH}/face_landmarker.task`
                 },
 
                 runningMode: "VIDEO",
@@ -89,12 +92,12 @@ async function loadModels() {
     } catch (error) {
         console.error("MODEL ERROR:", error);
 
+        modelsReady = false;
+
         setStatus("MODEL ERROR", "red");
 
         infoText.innerText =
             `${error.name || "Error"}: ${error.message}`;
-
-        throw error;
     }
 }
 
@@ -109,10 +112,7 @@ function distance(p1, p2) {
 }
 
 
-function calculateEAR(
-    landmarks,
-    indices
-) {
+function calculateEAR(landmarks, indices) {
     const p1 = landmarks[indices[0]];
     const p2 = landmarks[indices[1]];
     const p3 = landmarks[indices[2]];
@@ -120,20 +120,9 @@ function calculateEAR(
     const p5 = landmarks[indices[4]];
     const p6 = landmarks[indices[5]];
 
-    const horizontal = distance(
-        p1,
-        p2
-    );
-
-    const vertical1 = distance(
-        p3,
-        p4
-    );
-
-    const vertical2 = distance(
-        p5,
-        p6
-    );
+    const horizontal = distance(p1, p2);
+    const vertical1 = distance(p3, p4);
+    const vertical2 = distance(p5, p6);
 
     if (horizontal === 0) {
         return 0;
@@ -314,30 +303,22 @@ function combineResult(
 }
 
 
-function smoothState(
-    history,
-    state
-) {
+function smoothState(history, state) {
     history.push(state);
 
-    if (
-        history.length >
-        SMOOTH_FRAMES
-    ) {
+    if (history.length > SMOOTH_FRAMES) {
         history.shift();
     }
 
     const closedCount =
         history.filter(
-            value =>
-                value === "CLOSED"
+            value => value === "CLOSED"
         ).length;
 
-    const ratio =
-        closedCount /
-        history.length;
+    const closedRatio =
+        closedCount / history.length;
 
-    return ratio >= 0.6
+    return closedRatio >= 0.6
         ? "CLOSED"
         : "OPEN";
 }
@@ -367,7 +348,7 @@ function drawEye(
     ctx.font = "18px Arial";
 
     ctx.fillText(
-        `${state} EAR:${ear.toFixed(2)}`,
+        `${state}  EAR:${ear.toFixed(2)}`,
         box.x1,
         Math.max(
             20,
@@ -450,14 +431,10 @@ function processFrame() {
                 );
 
             const leftScore =
-                predictEye(
-                    leftBox
-                );
+                predictEye(leftBox);
 
             const rightScore =
-                predictEye(
-                    rightBox
-                );
+                predictEye(rightBox);
 
             const leftState =
                 combineResult(
@@ -543,6 +520,7 @@ function processFrame() {
 
         } else {
             closedStart = null;
+
             leftHistory = [];
             rightHistory = [];
 
@@ -586,6 +564,9 @@ async function startCamera() {
             "orange"
         );
 
+        infoText.innerText =
+            "Please wait until the model is loaded.";
+
         return;
     }
 
@@ -593,13 +574,14 @@ async function startCamera() {
         const stream =
             await navigator.mediaDevices.getUserMedia(
                 {
-                    video: true,
+                    video: {
+                        facingMode: "user"
+                    },
                     audio: false
                 }
             );
 
-        video.srcObject =
-            stream;
+        video.srcObject = stream;
 
         await video.play();
 
@@ -612,6 +594,8 @@ async function startCamera() {
             "AWAKE",
             "lime"
         );
+
+        infoText.innerText = "";
 
         processFrame();
 
