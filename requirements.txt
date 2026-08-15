@@ -1,6 +1,6 @@
 streamlit
-streamlit-webrtc
-tensorflow
+streamlit-webrtc==0.77.0
+tensorflow==2.21.0
 mediapipe
 opencv-python-headless
 numpy
