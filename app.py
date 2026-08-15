@@ -23,8 +23,8 @@ st.set_page_config(
 st.title("Driver Drowsiness Detection")
 
 st.write(
-    "카메라를 켜면 눈 상태를 실시간으로 분석합니다. "
-    "눈이 일정 시간 이상 감겨 있으면 SLEEPING으로 표시합니다."
+    "웹캠을 통해 운전자의 눈 상태를 실시간 분석합니다. "
+    "양쪽 눈이 일정 시간 이상 감겨 있으면 SLEEPING으로 판단합니다."
 )
 
 
@@ -32,24 +32,20 @@ st.write(
 # SETTINGS
 # =========================================================
 
-EAR_THRESHOLD = st.slider(
-    "Eye closed threshold",
-    min_value=0.10,
-    max_value=0.30,
-    value=0.18,
-    step=0.01
-)
+IMG_SIZE = 64
+
+CNN_OPEN_THRESHOLD = 0.55
+EAR_CLOSED_THRESHOLD = 0.18
 
 SLEEP_SECONDS = st.slider(
-    "Sleeping detection time (seconds)",
-    min_value=0.5,
+    "Sleeping detection time",
+    min_value=1.0,
     max_value=5.0,
     value=2.0,
     step=0.5
 )
 
-CNN_OPEN_THRESHOLD = 0.55
-IMG_SIZE = 64
+SMOOTH_FRAMES = 5
 
 
 # =========================================================
@@ -68,25 +64,16 @@ eye_model = load_eye_model()
 
 
 # =========================================================
-# MEDIAPIPE
+# LOAD MEDIAPIPE FACE LANDMARKER
 # =========================================================
 
 @st.cache_resource
 def load_face_landmarker():
 
     BaseOptions = mp.tasks.BaseOptions
-
-    FaceLandmarker = (
-        mp.tasks.vision.FaceLandmarker
-    )
-
-    FaceLandmarkerOptions = (
-        mp.tasks.vision.FaceLandmarkerOptions
-    )
-
-    RunningMode = (
-        mp.tasks.vision.RunningMode
-    )
+    FaceLandmarker = mp.tasks.vision.FaceLandmarker
+    FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+    RunningMode = mp.tasks.vision.RunningMode
 
     options = FaceLandmarkerOptions(
         base_options=BaseOptions(
@@ -107,7 +94,7 @@ landmarker = load_face_landmarker()
 
 
 # =========================================================
-# EYE LANDMARKS
+# LANDMARK INDEX
 # =========================================================
 
 LEFT_EYE = [
@@ -124,12 +111,8 @@ RIGHT_EYE = [
 
 
 # =========================================================
-# STATE
+# RUNTIME STATE
 # =========================================================
-
-if "closed_start" not in st.session_state:
-    st.session_state.closed_start = None
-
 
 runtime = {
     "closed_start": None,
@@ -139,14 +122,23 @@ runtime = {
 
 
 # =========================================================
-# FUNCTIONS
+# HELPERS
 # =========================================================
 
 def distance(p1, p2):
 
+    p1 = np.array(
+        p1,
+        dtype=np.float32
+    )
+
+    p2 = np.array(
+        p2,
+        dtype=np.float32
+    )
+
     return np.linalg.norm(
-        np.array(p1, dtype=np.float32)
-        - np.array(p2, dtype=np.float32)
+        p1 - p2
     )
 
 
@@ -190,7 +182,7 @@ def calculate_ear(
 
     return (
         vertical1 + vertical2
-    ) / (2 * horizontal)
+    ) / (2.0 * horizontal)
 
 
 def crop_eye(
@@ -246,14 +238,14 @@ def crop_eye(
         x1 - margin_x
     )
 
-    x2 = min(
-        width,
-        x2 + margin_x
-    )
-
     y1 = max(
         0,
         y1 - margin_y
+    )
+
+    x2 = min(
+        width,
+        x2 + margin_x
     )
 
     y2 = min(
@@ -273,6 +265,10 @@ def crop_eye(
         y2
     )
 
+
+# =========================================================
+# CNN
+# =========================================================
 
 def predict_eye(eye):
 
@@ -294,12 +290,17 @@ def predict_eye(eye):
         axis=0
     )
 
+    # 모델 내부에 Rescaling(1./255)이 있음
     open_score = float(
         eye_model.predict(
             eye,
             verbose=0
         )[0][0]
     )
+
+    # 학습 class:
+    # 0 = close eyes
+    # 1 = open eyes
 
     if open_score >= CNN_OPEN_THRESHOLD:
 
@@ -314,43 +315,53 @@ def predict_eye(eye):
     )
 
 
+# =========================================================
+# CNN + EAR HYBRID
+# =========================================================
+
 def combine_result(
     cnn_state,
     cnn_confidence,
     ear
 ):
 
-    # EAR가 확실히 낮으면 CLOSED
-    if ear < EAR_THRESHOLD - 0.03:
+    # EAR가 매우 낮으면 CLOSED 강제
+    if ear < 0.15:
         return "CLOSED"
 
-    # CNN과 EAR가 둘 다 CLOSED
+    # CNN + EAR 둘 다 CLOSED
     if (
         cnn_state == "CLOSED"
-        and ear < EAR_THRESHOLD
+        and
+        ear < EAR_CLOSED_THRESHOLD
     ):
         return "CLOSED"
 
-    # CNN이 매우 확신하는 경우
+    # CNN confidence가 매우 높은 경우
     if (
         cnn_state == "CLOSED"
-        and cnn_confidence >= 0.85
+        and
+        cnn_confidence >= 0.85
     ):
         return "CLOSED"
 
     return "OPEN"
 
 
+# =========================================================
+# TEMPORAL SMOOTHING
+# =========================================================
+
 def smooth_state(
     history,
-    new_state
+    state
 ):
 
     history.append(
-        new_state
+        state
     )
 
-    if len(history) > 5:
+    if len(history) > SMOOTH_FRAMES:
         history.pop(0)
 
     closed_ratio = (
@@ -365,7 +376,7 @@ def smooth_state(
 
 
 # =========================================================
-# VIDEO CALLBACK
+# VIDEO PROCESSING
 # =========================================================
 
 def process_frame(frame):
@@ -374,7 +385,7 @@ def process_frame(frame):
         format="bgr24"
     )
 
-    # 거울처럼 표시
+    # Mirror
     img = cv2.flip(
         img,
         1
@@ -396,6 +407,7 @@ def process_frame(frame):
         mp_image
     )
 
+
     status = "FACE NOT DETECTED"
 
     status_color = (
@@ -411,15 +423,10 @@ def process_frame(frame):
 
     if result.face_landmarks:
 
-        landmarks = (
-            result.face_landmarks[0]
-        )
+        landmarks = result.face_landmarks[0]
 
 
-        # -------------------------------------------------
         # EAR
-        # -------------------------------------------------
-
         left_ear = calculate_ear(
             landmarks,
             LEFT_EYE,
@@ -435,10 +442,7 @@ def process_frame(frame):
         )
 
 
-        # -------------------------------------------------
-        # EYE CROP
-        # -------------------------------------------------
-
+        # Crop
         left_eye, left_box = crop_eye(
             img,
             landmarks,
@@ -452,10 +456,7 @@ def process_frame(frame):
         )
 
 
-        # -------------------------------------------------
         # CNN
-        # -------------------------------------------------
-
         left_cnn, left_conf = predict_eye(
             left_eye
         )
@@ -465,10 +466,7 @@ def process_frame(frame):
         )
 
 
-        # -------------------------------------------------
-        # HYBRID DECISION
-        # -------------------------------------------------
-
+        # Hybrid
         left_state = combine_result(
             left_cnn,
             left_conf,
@@ -482,10 +480,7 @@ def process_frame(frame):
         )
 
 
-        # -------------------------------------------------
-        # SMOOTHING
-        # -------------------------------------------------
-
+        # Smoothing
         left_final = smooth_state(
             runtime["left_history"],
             left_state
@@ -497,19 +492,17 @@ def process_frame(frame):
         )
 
 
-        # -------------------------------------------------
-        # DRAW EYES
-        # -------------------------------------------------
+        # =================================================
+        # DRAW EYE BOX
+        # =================================================
 
         eye_results = [
-
             (
                 "LEFT",
                 left_final,
                 left_box,
                 left_ear
             ),
-
             (
                 "RIGHT",
                 right_final,
@@ -562,15 +555,15 @@ def process_frame(frame):
                     max(y1 - 8, 20)
                 ),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
+                0.50,
                 color,
                 2
             )
 
 
-        # -------------------------------------------------
-        # DROWSINESS TIMER
-        # -------------------------------------------------
+        # =================================================
+        # DROWSINESS
+        # =================================================
 
         both_closed = (
             left_final == "CLOSED"
@@ -639,17 +632,24 @@ def process_frame(frame):
             )
 
 
-        # EAR values
+        # Debug EAR
         cv2.putText(
             img,
-            f"L EAR {left_ear:.3f} | R EAR {right_ear:.3f}",
-            (25, height - 20),
+            f"L EAR:{left_ear:.3f}  R EAR:{right_ear:.3f}",
+            (
+                25,
+                height - 20
+            ),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
             (255, 255, 255),
             2
         )
 
+
+    # =====================================================
+    # NO FACE
+    # =====================================================
 
     else:
 
@@ -667,7 +667,7 @@ def process_frame(frame):
 
 
     # =====================================================
-    # MAIN STATUS
+    # STATUS
     # =====================================================
 
     cv2.putText(
@@ -701,10 +701,25 @@ webrtc_streamer(
         "audio": False
     },
 
-    async_processing=False
+    # Streamlit Cloud / remote deployment용 STUN
+    frontend_rtc_configuration={
+        "iceServers": [
+            {
+                "urls": [
+                    "stun:stun.l.google.com:19302"
+                ]
+            }
+        ]
+    },
+
+    async_processing=True
 )
 
 
+st.info(
+    "START 버튼을 누른 뒤 카메라 권한을 허용하세요."
+)
+
 st.caption(
-    "눈을 2초 이상 감고 있으면 SLEEPING으로 표시됩니다."
+    "양쪽 눈이 설정된 시간 이상 감겨 있으면 SLEEPING으로 표시됩니다."
 )
