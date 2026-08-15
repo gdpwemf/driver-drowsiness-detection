@@ -45,6 +45,9 @@ let rightHistory = [];
 let running = false;
 let modelsReady = false;
 
+let audioContext = null;
+let alarmInterval = null;
+
 
 function setStatus(text, color = "white") {
     statusText.innerText = text;
@@ -52,49 +55,147 @@ function setStatus(text, color = "white") {
 }
 
 
+function initAudio() {
+    if (!audioContext) {
+        audioContext = new (
+            window.AudioContext ||
+            window.webkitAudioContext
+        )();
+    }
+
+    if (audioContext.state === "suspended") {
+        audioContext.resume();
+    }
+}
+
+
+function beep() {
+    if (!audioContext) {
+        return;
+    }
+
+    const oscillator =
+        audioContext.createOscillator();
+
+    const gain =
+        audioContext.createGain();
+
+    oscillator.type = "sine";
+    oscillator.frequency.value = 900;
+
+    gain.gain.setValueAtTime(
+        0.3,
+        audioContext.currentTime
+    );
+
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+
+    oscillator.start();
+
+    oscillator.stop(
+        audioContext.currentTime + 0.25
+    );
+}
+
+
+function startAlarm() {
+    if (alarmInterval !== null) {
+        return;
+    }
+
+    beep();
+
+    alarmInterval = setInterval(
+        beep,
+        700
+    );
+}
+
+
+function stopAlarm() {
+    if (alarmInterval !== null) {
+        clearInterval(alarmInterval);
+        alarmInterval = null;
+    }
+}
+
+
 async function loadModels() {
     try {
-        setStatus("LOADING MODEL...", "yellow");
-        infoText.innerText = "";
+        modelsReady = false;
+
+        startButton.disabled = true;
+        startButton.innerText = "Loading...";
+
+        setStatus(
+            "LOADING MODEL...",
+            "yellow"
+        );
+
+        infoText.innerText =
+            "모델을 불러오는 중입니다. 잠시 기다려주세요.";
 
         await tf.ready();
 
-        eyeModel = await tf.loadLayersModel(
-            `${BASE_PATH}/model/model.json`
-        );
+        eyeModel =
+            await tf.loadLayersModel(
+                `${BASE_PATH}/model/model.json`
+            );
 
-        const vision = await FilesetResolver.forVisionTasks(
-            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm"
-        );
+        const vision =
+            await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm"
+            );
 
-        faceLandmarker = await FaceLandmarker.createFromOptions(
-            vision,
-            {
-                baseOptions: {
-                    modelAssetPath:
-                        `${BASE_PATH}/face_landmarker.task`
-                },
+        faceLandmarker =
+            await FaceLandmarker.createFromOptions(
+                vision,
+                {
+                    baseOptions: {
+                        modelAssetPath:
+                            `${BASE_PATH}/face_landmarker.task`
+                    },
 
-                runningMode: "VIDEO",
-                numFaces: 1,
+                    runningMode: "VIDEO",
+                    numFaces: 1,
 
-                minFaceDetectionConfidence: 0.5,
-                minFacePresenceConfidence: 0.5,
-                minTrackingConfidence: 0.5
-            }
-        );
+                    minFaceDetectionConfidence: 0.5,
+                    minFacePresenceConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                }
+            );
 
         modelsReady = true;
 
-        setStatus("READY", "lime");
-        infoText.innerText = "Model loaded successfully.";
+        startButton.disabled = false;
+        startButton.innerText =
+            "Start Camera";
+
+        setStatus(
+            "READY",
+            "lime"
+        );
+
+        infoText.innerText =
+            "Model loaded successfully.";
 
     } catch (error) {
-        console.error("MODEL ERROR:", error);
+        console.error(
+            "MODEL ERROR:",
+            error
+        );
 
         modelsReady = false;
 
-        setStatus("MODEL ERROR", "red");
+        startButton.disabled = true;
+        startButton.innerText =
+            "Model Error";
+
+        setStatus(
+            "MODEL ERROR",
+            "red"
+        );
 
         infoText.innerText =
             `${error.name || "Error"}: ${error.message}`;
@@ -107,29 +208,59 @@ function distance(p1, p2) {
     const dy = p1.y - p2.y;
 
     return Math.sqrt(
-        dx * dx + dy * dy
+        dx * dx +
+        dy * dy
     );
 }
 
 
-function calculateEAR(landmarks, indices) {
-    const p1 = landmarks[indices[0]];
-    const p2 = landmarks[indices[1]];
-    const p3 = landmarks[indices[2]];
-    const p4 = landmarks[indices[3]];
-    const p5 = landmarks[indices[4]];
-    const p6 = landmarks[indices[5]];
+function calculateEAR(
+    landmarks,
+    indices
+) {
+    const p1 =
+        landmarks[indices[0]];
 
-    const horizontal = distance(p1, p2);
-    const vertical1 = distance(p3, p4);
-    const vertical2 = distance(p5, p6);
+    const p2 =
+        landmarks[indices[1]];
+
+    const p3 =
+        landmarks[indices[2]];
+
+    const p4 =
+        landmarks[indices[3]];
+
+    const p5 =
+        landmarks[indices[4]];
+
+    const p6 =
+        landmarks[indices[5]];
+
+    const horizontal =
+        distance(
+            p1,
+            p2
+        );
+
+    const vertical1 =
+        distance(
+            p3,
+            p4
+        );
+
+    const vertical2 =
+        distance(
+            p5,
+            p6
+        );
 
     if (horizontal === 0) {
         return 0;
     }
 
     return (
-        vertical1 + vertical2
+        vertical1 +
+        vertical2
     ) / (
         2 * horizontal
     );
@@ -142,54 +273,86 @@ function getEyeBox(
     width,
     height
 ) {
-    const points = indices.map(
-        index => ({
-            x: landmarks[index].x * width,
-            y: landmarks[index].y * height
-        })
-    );
+    const points =
+        indices.map(
+            index => ({
+                x:
+                    landmarks[index].x *
+                    width,
 
-    const xs = points.map(p => p.x);
-    const ys = points.map(p => p.y);
+                y:
+                    landmarks[index].y *
+                    height
+            })
+        );
 
-    let x1 = Math.min(...xs);
-    let x2 = Math.max(...xs);
+    const xs =
+        points.map(p => p.x);
 
-    let y1 = Math.min(...ys);
-    let y2 = Math.max(...ys);
+    const ys =
+        points.map(p => p.y);
 
-    const eyeWidth = Math.max(
-        x2 - x1,
-        10
-    );
+    let x1 =
+        Math.min(...xs);
 
-    const eyeHeight = Math.max(
-        y2 - y1,
-        10
-    );
+    let x2 =
+        Math.max(...xs);
 
-    const marginX = eyeWidth * 0.35;
-    const marginY = eyeHeight * 1.2;
+    let y1 =
+        Math.min(...ys);
 
-    x1 = Math.max(
-        0,
-        Math.floor(x1 - marginX)
-    );
+    let y2 =
+        Math.max(...ys);
 
-    y1 = Math.max(
-        0,
-        Math.floor(y1 - marginY)
-    );
+    const eyeWidth =
+        Math.max(
+            x2 - x1,
+            10
+        );
 
-    x2 = Math.min(
-        width,
-        Math.ceil(x2 + marginX)
-    );
+    const eyeHeight =
+        Math.max(
+            y2 - y1,
+            10
+        );
 
-    y2 = Math.min(
-        height,
-        Math.ceil(y2 + marginY)
-    );
+    const marginX =
+        eyeWidth * 0.35;
+
+    const marginY =
+        eyeHeight * 1.2;
+
+    x1 =
+        Math.max(
+            0,
+            Math.floor(
+                x1 - marginX
+            )
+        );
+
+    y1 =
+        Math.max(
+            0,
+            Math.floor(
+                y1 - marginY
+            )
+        );
+
+    x2 =
+        Math.min(
+            width,
+            Math.ceil(
+                x2 + marginX
+            )
+        );
+
+    y2 =
+        Math.min(
+            height,
+            Math.ceil(
+                y2 + marginY
+            )
+        );
 
     return {
         x1,
@@ -201,28 +364,35 @@ function getEyeBox(
 
 
 function predictEye(box) {
-    const x1 = Math.max(
-        0,
-        Math.floor(box.x1)
-    );
+    const x1 =
+        Math.max(
+            0,
+            Math.floor(box.x1)
+        );
 
-    const y1 = Math.max(
-        0,
-        Math.floor(box.y1)
-    );
+    const y1 =
+        Math.max(
+            0,
+            Math.floor(box.y1)
+        );
 
-    const x2 = Math.min(
-        video.videoWidth,
-        Math.ceil(box.x2)
-    );
+    const x2 =
+        Math.min(
+            video.videoWidth,
+            Math.ceil(box.x2)
+        );
 
-    const y2 = Math.min(
-        video.videoHeight,
-        Math.ceil(box.y2)
-    );
+    const y2 =
+        Math.min(
+            video.videoHeight,
+            Math.ceil(box.y2)
+        );
 
-    const cropWidth = x2 - x1;
-    const cropHeight = y2 - y1;
+    const cropWidth =
+        x2 - x1;
+
+    const cropHeight =
+        y2 - y1;
 
     if (
         cropWidth <= 1 ||
@@ -233,7 +403,9 @@ function predictEye(box) {
 
     return tf.tidy(() => {
         const frameTensor =
-            tf.browser.fromPixels(video);
+            tf.browser.fromPixels(
+                video
+            );
 
         const eyeTensor =
             frameTensor.slice(
@@ -262,9 +434,12 @@ function predictEye(box) {
             resized.expandDims(0);
 
         const prediction =
-            eyeModel.predict(batch);
+            eyeModel.predict(
+                batch
+            );
 
-        return prediction.dataSync()[0];
+        return prediction
+            .dataSync()[0];
     });
 }
 
@@ -274,7 +449,8 @@ function combineResult(
     ear
 ) {
     const cnnState =
-        openScore >= CNN_OPEN_THRESHOLD
+        openScore >=
+        CNN_OPEN_THRESHOLD
             ? "OPEN"
             : "CLOSED";
 
@@ -287,7 +463,8 @@ function combineResult(
 
     if (
         cnnState === "CLOSED" &&
-        ear < EAR_CLOSED_THRESHOLD
+        ear <
+        EAR_CLOSED_THRESHOLD
     ) {
         return "CLOSED";
     }
@@ -303,20 +480,28 @@ function combineResult(
 }
 
 
-function smoothState(history, state) {
+function smoothState(
+    history,
+    state
+) {
     history.push(state);
 
-    if (history.length > SMOOTH_FRAMES) {
+    if (
+        history.length >
+        SMOOTH_FRAMES
+    ) {
         history.shift();
     }
 
     const closedCount =
         history.filter(
-            value => value === "CLOSED"
+            value =>
+                value === "CLOSED"
         ).length;
 
     const closedRatio =
-        closedCount / history.length;
+        closedCount /
+        history.length;
 
     return closedRatio >= 0.6
         ? "CLOSED"
@@ -334,8 +519,11 @@ function drawEye(
             ? "#00ff00"
             : "#ff0000";
 
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
+    ctx.strokeStyle =
+        color;
+
+    ctx.lineWidth =
+        3;
 
     ctx.strokeRect(
         box.x1,
@@ -344,11 +532,14 @@ function drawEye(
         box.y2 - box.y1
     );
 
-    ctx.fillStyle = color;
-    ctx.font = "18px Arial";
+    ctx.fillStyle =
+        color;
+
+    ctx.font =
+        "18px Arial";
 
     ctx.fillText(
-        `${state}  EAR:${ear.toFixed(2)}`,
+        `${state} EAR:${ear.toFixed(2)}`,
         box.x1,
         Math.max(
             20,
@@ -431,10 +622,14 @@ function processFrame() {
                 );
 
             const leftScore =
-                predictEye(leftBox);
+                predictEye(
+                    leftBox
+                );
 
             const rightScore =
-                predictEye(rightBox);
+                predictEye(
+                    rightBox
+                );
 
             const leftState =
                 combineResult(
@@ -477,7 +672,9 @@ function processFrame() {
                 rightFinal === "CLOSED";
 
             if (bothClosed) {
-                if (closedStart === null) {
+                if (
+                    closedStart === null
+                ) {
                     closedStart =
                         performance.now();
                 }
@@ -496,11 +693,16 @@ function processFrame() {
                         "SLEEPING",
                         "red"
                     );
+
+                    startAlarm();
+
                 } else {
                     setStatus(
                         "EYES CLOSED",
                         "orange"
                     );
+
+                    stopAlarm();
                 }
 
                 infoText.innerText =
@@ -508,6 +710,8 @@ function processFrame() {
 
             } else {
                 closedStart = null;
+
+                stopAlarm();
 
                 setStatus(
                     "AWAKE",
@@ -524,6 +728,8 @@ function processFrame() {
             leftHistory = [];
             rightHistory = [];
 
+            stopAlarm();
+
             setStatus(
                 "FACE NOT DETECTED",
                 "white"
@@ -539,6 +745,8 @@ function processFrame() {
         );
 
         running = false;
+
+        stopAlarm();
 
         setStatus(
             "PROCESSING ERROR",
@@ -559,29 +767,28 @@ function processFrame() {
 
 async function startCamera() {
     if (!modelsReady) {
-        setStatus(
-            "MODEL NOT READY",
-            "orange"
-        );
-
-        infoText.innerText =
-            "Please wait until the model is loaded.";
-
         return;
     }
 
+    initAudio();
+
     try {
+        startButton.disabled = true;
+        startButton.innerText =
+            "Starting Camera...";
+
         const stream =
-            await navigator.mediaDevices.getUserMedia(
-                {
+            await navigator.mediaDevices
+                .getUserMedia({
                     video: {
                         facingMode: "user"
                     },
-                    audio: false
-                }
-            );
 
-        video.srcObject = stream;
+                    audio: false
+                });
+
+        video.srcObject =
+            stream;
 
         await video.play();
 
@@ -605,6 +812,12 @@ async function startCamera() {
             error
         );
 
+        stopAlarm();
+
+        startButton.disabled = false;
+        startButton.innerText =
+            "Start Camera";
+
         setStatus(
             "CAMERA ERROR",
             "red"
@@ -615,6 +828,9 @@ async function startCamera() {
     }
 }
 
+
+startButton.disabled = true;
+startButton.innerText = "Loading...";
 
 startButton.addEventListener(
     "click",
